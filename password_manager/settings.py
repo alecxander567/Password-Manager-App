@@ -25,7 +25,7 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-v#+w^^q+&jhs95e3&0zjam=hiu9c&8md$l+u4bze-f-ijyt+se"
+SECRET_KEY = os.environ.get("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -87,11 +87,11 @@ WSGI_APPLICATION = "password_manager.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("DB_NAME", "neondb"),
-        "USER": os.environ.get("DB_USER", "neondb_owner"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", "npg_CJ9FLiW4OgUu"),
-        "HOST": os.environ.get("DB_HOST", "ep-mute-mud-azba08js-pooler.c-3.ap-southeast-1.aws.neon.tech"),
-        "PORT": os.environ.get("DB_PORT", "5432"),
+        "NAME": os.environ.get("DB_NAME"),
+        "USER": os.environ.get("DB_USER"),
+        "PASSWORD": os.environ.get("DB_PASSWORD"),
+        "HOST": os.environ.get("DB_HOST"),
+        "PORT": os.environ.get("DB_PORT"),
         "OPTIONS": {
             "sslmode": "require",
         },
