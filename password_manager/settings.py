@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "api",
     "users",
     "categories",
+    "vaults",
 ]
 
 MIDDLEWARE = [
