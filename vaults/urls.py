@@ -5,6 +5,7 @@ urlpatterns = [
     # Vault endpoints
     path("", views.VaultListCreateView.as_view(), name="vault-list-create"),
     path("<int:pk>/", views.VaultDetailView.as_view(), name="vault-detail"),
+    path("<int:pk>/unlock/", views.VaultUnlockView.as_view(), name="vault-unlock"),
     # Account endpoints (nested under vaults)
     path("<int:vault_pk>/accounts/", views.AccountListCreateView.as_view(), name="account-list-create"),
     path("<int:vault_pk>/accounts/<int:pk>/", views.AccountDetailView.as_view(), name="account-detail"),

@@ -1,6 +1,8 @@
 import json
 import base64
 import dataclasses
+import hashlib
+import hmac
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -43,6 +45,71 @@ class VaultDetailView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return Vault.objects.filter(owner=self.request.user)
+
+
+class VaultUnlockView(APIView):
+    """
+    Verify the master password for a vault.
+    User must be the vault owner (checked via JWT).
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk):
+        vault = get_object_or_404(Vault, pk=pk, owner=request.user)
+        master_password = request.data.get("master_password")
+
+        if not master_password:
+            return Response(
+                {"error": "Master password is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.conf import settings
+        import base64
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        salt = base64.b64decode(vault.kdf_salt)
+        iterations = 100000
+        encrypted_vault_key = base64.b64decode(vault.encrypted_vault_key)
+        nonce = encrypted_vault_key[:12]
+        ciphertext_with_tag = encrypted_vault_key[12:]
+
+        # Try the provided password first, then the user's email (for vaults created without custom password)
+        passwords_to_try = [master_password, request.user.email]
+        
+        for pwd in passwords_to_try:
+            try:
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=salt,
+                    iterations=iterations,
+                    backend=default_backend(),
+                )
+                derived_key = kdf.derive(pwd.encode('utf-8'))
+                aesgcm = AESGCM(derived_key)
+                decrypted_vault_key = aesgcm.decrypt(nonce, ciphertext_with_tag, None)
+
+                return Response(
+                    {
+                        "status": "success",
+                        "message": "Vault unlocked successfully.",
+                        "vault_id": vault.id,
+                        "vault_name": vault.name,
+                        "vault_key": base64.b64encode(decrypted_vault_key).decode('utf-8'),
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            except Exception:
+                continue
+
+        return Response(
+            {"error": "Invalid master password."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 # ──────────────────────────────────────────────
