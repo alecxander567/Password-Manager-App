@@ -85,6 +85,14 @@ class AccountListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class AccountUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating an account (site_name and encrypted data)."""
+    class Meta:
+        model = Account
+        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
 class AccountDetailSerializer(serializers.ModelSerializer):
     """Returns the full encrypted password blob for a single account."""
     class Meta:
