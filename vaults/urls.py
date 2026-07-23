@@ -3,6 +3,8 @@ from . import views
 
 urlpatterns = [
     # Vault endpoints
+    path("password-generate/", views.PasswordGenerateView.as_view(), name="password-generate"),
+    path("password-strength/", views.PasswordStrengthCheckView.as_view(), name="password-strength-check"),
     path("", views.VaultListCreateView.as_view(), name="vault-list-create"),
     path("<int:pk>/", views.VaultDetailView.as_view(), name="vault-detail"),
     path("<int:pk>/unlock/", views.VaultUnlockView.as_view(), name="vault-unlock"),

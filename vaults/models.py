@@ -38,6 +38,11 @@ class Account(models.Model):
     site_name = models.CharField(max_length=255)
     encrypted_password = models.TextField()
     iv_nonce = models.TextField()
+    password_strength = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Password strength score (0-100). Null if not evaluated.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

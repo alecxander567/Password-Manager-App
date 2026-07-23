@@ -11,6 +11,8 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 
 from .models import Vault, Account
+from vaults.utils import check_password_strength, generate_password, generate_pin, generate_passphrase
+
 from .serializers import (
     VaultListSerializer,
     VaultCreateSerializer,
@@ -224,6 +226,99 @@ class AccountDeleteView(generics.DestroyAPIView):
         request.session.pop(f"webauthn_auth_verified_{vault.id}", None)
 
         return super().destroy(request, *args, **kwargs)
+
+
+# -------------------------------------------------------------------
+#  Password Strength Check Endpoint
+# -------------------------------------------------------------------
+
+
+class PasswordGenerateView(APIView):
+    """
+    Generate a cryptographically secure random password.
+    Accepts optional parameters to customize the generated password.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        length = request.data.get("length", 20)
+        use_lowercase = request.data.get("use_lowercase", True)
+        use_uppercase = request.data.get("use_uppercase", True)
+        use_digits = request.data.get("use_digits", True)
+        use_special = request.data.get("use_special", True)
+        exclude_confusing = request.data.get("exclude_confusing", True)
+        min_lowercase = request.data.get("min_lowercase", 1)
+        min_uppercase = request.data.get("min_uppercase", 1)
+        min_digits = request.data.get("min_digits", 1)
+        min_special = request.data.get("min_special", 1)
+        exclude_chars = request.data.get("exclude_chars", "")
+        mode = request.data.get("mode", "password")
+
+        try:
+            if mode == "pin":
+                password = generate_pin(length=length)
+            elif mode == "passphrase":
+                word_count = request.data.get("word_count", 4)
+                separator = request.data.get("separator", "-")
+                capitalize = request.data.get("capitalize", True)
+                add_number = request.data.get("add_number", True)
+                password = generate_passphrase(
+                    word_count=word_count,
+                    separator=separator,
+                    capitalize=capitalize,
+                    add_number=add_number,
+                )
+            else:
+                password = generate_password(
+                    length=length,
+                    use_lowercase=use_lowercase,
+                    use_uppercase=use_uppercase,
+                    use_digits=use_digits,
+                    use_special=use_special,
+                    exclude_confusing=exclude_confusing,
+                    min_lowercase=min_lowercase,
+                    min_uppercase=min_uppercase,
+                    min_digits=min_digits,
+                    min_special=min_special,
+                    exclude_chars=exclude_chars,
+                )
+
+            # Also evaluate the strength of the generated password
+            from vaults.utils import check_password_strength
+            strength = check_password_strength(password)
+
+            return Response({
+                "password": password,
+                "strength": strength,
+            }, status=status.HTTP_200_OK)
+
+        except ValueError as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class PasswordStrengthCheckView(APIView):
+    """
+    Evaluate the strength of a password server-side.
+    Accepts a password and returns a strength score, label, and feedback.
+    This is useful for client-side validation before saving an account.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        password = request.data.get("password", "")
+        if not password:
+            return Response(
+                {"error": "Password is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = check_password_strength(password)
+        return Response(result, status=status.HTTP_200_OK)
 
 
 # -------------------------------------------------------------------

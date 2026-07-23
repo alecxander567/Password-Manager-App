@@ -66,12 +66,19 @@ class VaultDetailSerializer(serializers.ModelSerializer):
 
 
 class AccountCreateSerializer(serializers.ModelSerializer):
+    password_strength_score = serializers.IntegerField(
+        write_only=True, required=False, allow_null=True,
+        help_text="Password strength score (0-100) evaluated client-side."
+    )
     class Meta:
         model = Account
-        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "created_at", "updated_at"]
+        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "password_strength_score", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def create(self, validated_data):
+        password_strength_score = validated_data.pop("password_strength_score", None)
+        if password_strength_score is not None:
+            validated_data["password_strength"] = password_strength_score
         vault_id = self.context["view"].kwargs.get("vault_pk")
         validated_data["vault_id"] = vault_id
         return super().create(validated_data)
@@ -79,23 +86,49 @@ class AccountCreateSerializer(serializers.ModelSerializer):
 
 class AccountListSerializer(serializers.ModelSerializer):
     """Returns only account names (no encrypted data)."""
+    password_strength_label = serializers.SerializerMethodField()
+
     class Meta:
         model = Account
-        fields = ["id", "site_name", "created_at", "updated_at"]
-        read_only_fields = fields
+        fields = ["id", "site_name", "password_strength", "password_strength_label", "created_at", "updated_at"]
+        read_only_fields = ["id", "password_strength", "password_strength_label", "created_at", "updated_at"]
+
+    def get_password_strength_label(self, obj):
+        if obj.password_strength is not None:
+            from vaults.utils import get_strength_label
+            return get_strength_label(obj.password_strength)
+        return None
 
 
 class AccountUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating an account (site_name and encrypted data)."""
+    password_strength_score = serializers.IntegerField(
+        write_only=True, required=False, allow_null=True,
+        help_text="Password strength score (0-100) evaluated client-side."
+    )
     class Meta:
         model = Account
-        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "created_at", "updated_at"]
+        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "password_strength_score", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def update(self, instance, validated_data):
+        password_strength_score = validated_data.pop("password_strength_score", None)
+        if password_strength_score is not None:
+            validated_data["password_strength"] = password_strength_score
+        return super().update(instance, validated_data)
 
 
 class AccountDetailSerializer(serializers.ModelSerializer):
     """Returns the full encrypted password blob for a single account."""
+    password_strength_label = serializers.SerializerMethodField()
+
     class Meta:
         model = Account
-        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "created_at", "updated_at"]
+        fields = ["id", "site_name", "encrypted_password", "iv_nonce", "password_strength", "password_strength_label", "created_at", "updated_at"]
         read_only_fields = fields
+
+    def get_password_strength_label(self, obj):
+        if obj.password_strength is not None:
+            from vaults.utils import get_strength_label
+            return get_strength_label(obj.password_strength)
+        return None
