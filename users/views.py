@@ -36,6 +36,7 @@ class RegisterView(generics.CreateAPIView):
     Create a new user account.
     Returns JWT tokens on success.
     """
+
     queryset = User.objects.all()
     permission_classes = (permissions.AllowAny,)
     serializer_class = RegisterSerializer
@@ -78,6 +79,7 @@ class LoginView(APIView):
     Authenticate a user with email and password.
     Returns JWT tokens on success.
     """
+
     permission_classes = (permissions.AllowAny,)
 
     def post(self, request):
@@ -106,6 +108,7 @@ class LogoutView(APIView):
     Blacklist the provided refresh token.
     Requires authentication.
     """
+
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request):
@@ -136,8 +139,13 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
     """
     Retrieve or update the authenticated user's profile.
     """
+
     permission_classes = (permissions.IsAuthenticated,)
-    serializer_class = UserSerializer
+
+    def get_serializer_class(self):
+        if self.request.method in ["PUT", "PATCH"]:
+            return UpdateUserSerializer
+        return UserSerializer
 
     def get_object(self):
         return self.request.user
@@ -145,16 +153,15 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
-        serializer = UpdateUserSerializer(
-            instance, data=request.data, partial=partial
-        )
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
 
         try:
             self.perform_update(serializer)
-        except IntegrityError:
+        except IntegrityError as e:
             return Response(
-                {"error": "That username is already taken."},
+                {"error": "That username or email is already taken."},
                 status=status.HTTP_409_CONFLICT,
             )
         except Exception as e:
@@ -174,6 +181,7 @@ class ChangePasswordView(APIView):
     Change the authenticated user's password.
     Requires old password verification.
     """
+
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request):
@@ -210,23 +218,37 @@ class ChangePasswordView(APIView):
 
 
 # ──────────────────────────────────────────────
-#  Delete account
+#  Delete account - FIXED
 # ──────────────────────────────────────────────
 class DeleteAccountView(APIView):
     """
     Permanently delete the authenticated user's account.
     """
+
     permission_classes = (permissions.IsAuthenticated,)
 
     def delete(self, request):
         user = request.user
+
         try:
+            # Blacklist the refresh token if it exists
+            try:
+                refresh_token = request.data.get("refresh")
+                if refresh_token:
+                    token = RefreshToken(refresh_token)
+                    token.blacklist()
+            except Exception as e:
+                # If token blacklisting fails, continue with deletion
+                print(f"Token blacklist error (ignored): {e}")
+
+            # Delete the user
             user.delete()
-            return Response(
-                {"detail": "Account deleted successfully."},
-                status=status.HTTP_204_NO_CONTENT,
-            )
+
+            # 204 No Content must have NO response body
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
         except Exception as e:
+            print(f"Account deletion error: {e}")
             return Response(
                 {"error": "An unexpected error occurred while deleting your account."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,

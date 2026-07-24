@@ -13,6 +13,9 @@ from django.shortcuts import get_object_or_404
 from .models import Vault, Account
 from vaults.utils import check_password_strength, generate_password, generate_pin, generate_passphrase
 
+from django.db.models import Count, Q, Avg, F, Value, FloatField
+from django.db.models.functions import Coalesce
+
 from .serializers import (
     VaultListSerializer,
     VaultCreateSerializer,
@@ -718,3 +721,55 @@ class WebAuthnAuthenticationVerifyView(APIView):
                 {"error": f"Authentication verification failed: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+
+# Add this view class
+class DashboardStatsView(APIView):
+    """
+    Get dashboard statistics for the authenticated user.
+    Returns total accounts, weak/strong counts, and security score.
+    """
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        user = request.user
+        
+        # Get all vaults owned by the user
+        vaults = Vault.objects.filter(owner=user)
+        
+        # Get all accounts across all user's vaults
+        accounts = Account.objects.filter(vault__in=vaults)
+        
+        total_accounts = accounts.count()
+        
+        # Count strong passwords (score >= 70)
+        strong_count = accounts.filter(
+            Q(password_strength__gte=70) & Q(password_strength__isnull=False)
+        ).count()
+        
+        # Count weak passwords (score < 50)
+        weak_count = accounts.filter(
+            Q(password_strength__lt=50) & Q(password_strength__isnull=False)
+        ).count()
+        
+        # Count medium passwords (50-69)
+        medium_count = accounts.filter(
+            Q(password_strength__gte=50) & Q(password_strength__lt=70) & Q(password_strength__isnull=False)
+        ).count()
+        
+        # Calculate security score (average of all password strengths)
+        # Only consider accounts with a strength score
+        avg_score = accounts.filter(password_strength__isnull=False).aggregate(
+            avg=Coalesce(Avg('password_strength'), Value(0.0), output_field=FloatField())
+        )['avg']
+        
+        # Round to nearest integer
+        security_score = round(avg_score) if avg_score else 0
+        
+        return Response({
+            'total_accounts': total_accounts,
+            'strong_count': strong_count,
+            'medium_count': medium_count,
+            'weak_count': weak_count,
+            'security_score': security_score,
+        })

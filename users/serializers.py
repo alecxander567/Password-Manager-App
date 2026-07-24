@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core import exceptions as django_exceptions
+from django.core.validators import validate_email
 
 User = get_user_model()
 
@@ -21,13 +22,11 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("id", "username", "email", "password", "password2", "bio", "profile_picture")
+        fields = ("id", "username", "email", "password", "password2", "bio")
 
     def validate(self, attrs):
         if attrs["password"] != attrs.pop("password2"):
-            raise serializers.ValidationError(
-                {"password": "Passwords do not match."}
-            )
+            raise serializers.ValidationError({"password": "Passwords do not match."})
         return attrs
 
     def create(self, validated_data):
@@ -70,7 +69,7 @@ class LoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("id", "username", "email", "bio", "profile_picture", "created_at", "updated_at")
+        fields = ("id", "username", "email", "bio", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
 
@@ -98,6 +97,72 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class UpdateUserSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(required=False, validators=[validate_email])
+
     class Meta:
         model = User
-        fields = ("username", "bio", "profile_picture")
+        fields = ("username", "email", "bio")
+        extra_kwargs = {
+            "username": {"required": False},
+            "email": {"required": False},
+            "bio": {"required": False},
+        }
+
+    def validate_username(self, value):
+        """Validate that the username is unique and follows the correct format."""
+        if value:
+            # Trim whitespace
+            value = value.strip()
+
+            # Check if username is taken
+            user_id = self.instance.id if self.instance else None
+            if User.objects.filter(username=value).exclude(id=user_id).exists():
+                raise serializers.ValidationError(
+                    "A user with this username already exists."
+                )
+
+            # Validate username length
+            if len(value) < 3:
+                raise serializers.ValidationError(
+                    "Username must be at least 3 characters long."
+                )
+            if len(value) > 150:
+                raise serializers.ValidationError(
+                    "Username must be at most 150 characters long."
+                )
+
+            # Django's User model automatically validates the username format
+            # Valid characters: letters, numbers, and @/./+/-/_
+
+        return value
+
+    def validate_email(self, value):
+        """Validate that the email is unique."""
+        if value:
+            # Trim whitespace
+            value = value.strip()
+
+            # Check if email is taken
+            user_id = self.instance.id if self.instance else None
+            if User.objects.filter(email=value).exclude(id=user_id).exists():
+                raise serializers.ValidationError(
+                    "A user with this email already exists."
+                )
+
+        return value
+
+    def validate_bio(self, value):
+        """Validate bio length."""
+        if value:
+            value = value.strip()
+            if len(value) > 500:
+                raise serializers.ValidationError(
+                    "Bio must be at most 500 characters long."
+                )
+        return value
+
+    def validate(self, attrs):
+        """Validate that at least one field is being updated."""
+        if not attrs:
+            raise serializers.ValidationError("No fields to update.")
+        return attrs
