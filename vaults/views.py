@@ -30,6 +30,7 @@ from .serializers import (
     AccountDetailSerializer,
 )
 
+
 # -------------------------------------------------------------------
 #  Vault Endpoints
 # -------------------------------------------------------------------
@@ -396,11 +397,58 @@ try:
         UserVerificationRequirement,
         AuthenticatorAttestationResponse,
         AuthenticatorAssertionResponse,
+        PublicKeyCredentialDescriptor,
     )
 
     WEBAUTHN_AVAILABLE = True
 except ImportError:
     WEBAUTHN_AVAILABLE = False
+
+
+# -------------------------------------------------------------------
+#  WebAuthn Helper Functions
+# -------------------------------------------------------------------
+
+def _get_origin_and_rp_id(request):
+    """
+    Extract the origin and RP ID from the request headers.
+    Uses the HTTP_ORIGIN header (set by browsers for WebAuthn).
+    Falls back to HTTP_HOST if origin is not set.
+    """
+    origin_header = request.META.get("HTTP_ORIGIN", "")
+    if origin_header:
+        from urllib.parse import urlparse
+        parsed = urlparse(origin_header)
+        rp_id = parsed.hostname or request.get_host().split(":")[0]
+        origin = origin_header
+    else:
+        host = request.get_host().split(":")[0]
+        rp_id = host
+        # Determine if we should use https or http
+        if request.is_secure() or "localhost" not in host:
+            origin = f"https://{host}"
+        else:
+            origin = f"http://{host}"
+
+    return origin, rp_id
+
+
+def _to_base64(value):
+    """Convert various input formats to a base64-encoded string."""
+    if isinstance(value, str):
+        try:
+            base64.b64decode(value)
+            return value
+        except Exception:
+            try:
+                return base64.b64encode(bytes.fromhex(value)).decode("utf-8")
+            except Exception:
+                return value
+    elif isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(value).decode("utf-8")
+    elif isinstance(value, list):
+        return base64.b64encode(bytes(value)).decode("utf-8")
+    return value
 
 
 # -------------------------------------------------------------------
@@ -421,29 +469,13 @@ class WebAuthnRegistrationOptionsView(APIView):
         vault = get_object_or_404(Vault, pk=vault_pk, owner=request.user)
         user = request.user
 
+        origin, rp_id = _get_origin_and_rp_id(request)
+
         # DEBUG: Log WebAuthn configuration
         print(f"=== WebAuthn Registration Options ===")
         print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
         print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
-        print(f"request.get_host(): {request.get_host()}")
-        print(f"request.scheme: {request.scheme}")
-        print(f"request.is_secure(): {request.is_secure()}")
-
-        origin = request.META.get("HTTP_ORIGIN", "")
-        if origin:
-            from urllib.parse import urlparse
-
-            parsed = urlparse(origin)
-            rp_id = parsed.hostname or request.get_host().split(":")[0]
-            print(f"Using HTTP_ORIGIN - rp_id: {rp_id}, origin: {origin}")
-        else:
-            rp_id = request.get_host().split(":")[0]
-            origin = (
-                f"https://{rp_id}"
-                if not request.is_secure() and "localhost" not in rp_id
-                else f"http://{rp_id}"
-            )
-            print(f"Using fallback - rp_id: {rp_id}, origin: {origin}")
+        print(f"Using rp_id: {rp_id}, origin: {origin}")
 
         rp_name = "Password Manager"
 
@@ -466,7 +498,11 @@ class WebAuthnRegistrationOptionsView(APIView):
             challenge = options.challenge
             if isinstance(challenge, bytes):
                 challenge = challenge.hex()
+
+            # IMPORTANT: Store origin and rp_id in session for verify step
             request.session[f"webauthn_reg_challenge_{vault_pk}"] = challenge
+            request.session[f"webauthn_reg_origin_{vault_pk}"] = origin
+            request.session[f"webauthn_reg_rp_id_{vault_pk}"] = rp_id
 
             options_dict = serialize_webauthn_options(options)
             options_dict.pop("hints", None)
@@ -491,6 +527,7 @@ class WebAuthnRegistrationVerifyView(APIView):
 
         vault = get_object_or_404(Vault, pk=vault_pk, owner=request.user)
 
+        # Retrieve stored challenge, origin, and rp_id from session
         challenge_hex = request.session.pop(f"webauthn_reg_challenge_{vault_pk}", None)
         if not challenge_hex:
             return Response(
@@ -498,47 +535,20 @@ class WebAuthnRegistrationVerifyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Use stored values to ensure consistency with registration options
+        origin = request.session.pop(f"webauthn_reg_origin_{vault_pk}", None)
+        rp_id = request.session.pop(f"webauthn_reg_rp_id_{vault_pk}", None)
+
+        if not origin or not rp_id:
+            # Fallback: compute from request (shouldn't happen if options was called)
+            origin, rp_id = _get_origin_and_rp_id(request)
+
+        print(f"=== WebAuthn Registration Verify ===")
+        print(f"Using stored rp_id: {rp_id}, origin: {origin}")
+
         try:
             challenge = bytes.fromhex(challenge_hex)
             cd = request.data
-
-            origin_header = request.META.get("HTTP_ORIGIN", "")
-            if origin_header:
-                from urllib.parse import urlparse
-
-                parsed_origin = urlparse(origin_header)
-                rp_id = parsed_origin.hostname or request.get_host().split(":")[0]
-                origin = origin_header
-            else:
-                rp_id = request.get_host().split(":")[0]
-                origin = (
-                    f"https://{rp_id}"
-                    if "localhost" not in rp_id
-                    else f"http://{rp_id}"
-                )
-
-            # Helper function to convert various input formats to base64 string
-            def _to_base64(value):
-                if isinstance(value, str):
-                    # Already a base64 string or hex string
-                    try:
-                        base64.b64decode(value)
-                        return value
-                    except Exception:
-                        # Try hex
-                        try:
-                            return base64.b64encode(bytes.fromhex(value)).decode(
-                                "utf-8"
-                            )
-                        except Exception:
-                            return value
-                elif isinstance(value, (bytes, bytearray)):
-                    # Raw bytes - encode to base64
-                    return base64.b64encode(value).decode("utf-8")
-                elif isinstance(value, list):
-                    # Array of bytes
-                    return base64.b64encode(bytes(value)).decode("utf-8")
-                return value
 
             # Convert credential data to base64 strings
             credential_id = _to_base64(cd.get("id", ""))
@@ -621,6 +631,9 @@ class WebAuthnRegistrationVerifyView(APIView):
             )
 
         except Exception as e:
+            import traceback
+            print(f"Registration verification error: {e}")
+            print(traceback.format_exc())
             return Response(
                 {"error": f"Registration verification failed: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -645,36 +658,42 @@ class WebAuthnAuthenticationOptionsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        origin, rp_id = _get_origin_and_rp_id(request)
+
         # DEBUG: Log WebAuthn configuration
         print(f"=== WebAuthn Authentication Options ===")
         print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
         print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
-        print(f"request.get_host(): {request.get_host()}")
-        print(f"request.scheme: {request.scheme}")
-        print(f"request.is_secure(): {request.is_secure()}")
+        print(f"Using rp_id: {rp_id}, origin: {origin}")
         print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
 
-        origin = request.META.get("HTTP_ORIGIN", "")
-        if origin:
-            from urllib.parse import urlparse
-
-            parsed = urlparse(origin)
-            rp_id = parsed.hostname or request.get_host().split(":")[0]
-            print(f"Using HTTP_ORIGIN - rp_id: {rp_id}, origin: {origin}")
-        else:
-            rp_id = request.get_host().split(":")[0]
-            print(f"Using fallback rp_id: {rp_id}")
-
         try:
+            # Convert stored credential ID from hex to bytes
+            allow_credentials = None
+            if vault.webauthn_credential_id:
+                try:
+                    cred_id_bytes = bytes.fromhex(vault.webauthn_credential_id)
+                    allow_credentials = [
+                        PublicKeyCredentialDescriptor(id=cred_id_bytes),
+                    ]
+                    print(f"Filtering to specific credential ID: {vault.webauthn_credential_id[:20]}...")
+                except Exception as e:
+                    print(f"Could not parse credential ID: {e}")
+
             options = generate_authentication_options(
                 rp_id=rp_id,
                 user_verification=UserVerificationRequirement.PREFERRED,
+                allow_credentials=allow_credentials,
             )
 
             challenge = options.challenge
             if isinstance(challenge, bytes):
                 challenge = challenge.hex()
+
+            # IMPORTANT: Store origin and rp_id in session for verify step
             request.session[f"webauthn_auth_challenge_{vault_pk}"] = challenge
+            request.session[f"webauthn_auth_origin_{vault_pk}"] = origin
+            request.session[f"webauthn_auth_rp_id_{vault_pk}"] = rp_id
 
             options_dict = serialize_webauthn_options(options)
             return Response(options_dict, status=status.HTTP_200_OK)
@@ -704,6 +723,7 @@ class WebAuthnAuthenticationVerifyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Retrieve stored challenge, origin, and rp_id from session
         challenge_hex = request.session.pop(f"webauthn_auth_challenge_{vault_pk}", None)
         if not challenge_hex:
             return Response(
@@ -713,75 +733,24 @@ class WebAuthnAuthenticationVerifyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Use stored values to ensure consistency with authentication options
+        origin = request.session.pop(f"webauthn_auth_origin_{vault_pk}", None)
+        rp_id = request.session.pop(f"webauthn_auth_rp_id_{vault_pk}", None)
+
+        if not origin or not rp_id:
+            # Fallback: compute from request (shouldn't happen if options was called)
+            origin, rp_id = _get_origin_and_rp_id(request)
+
+        # DEBUG: Log WebAuthn configuration
+        print(f"=== WebAuthn Authentication Verify ===")
+        print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
+        print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
+        print(f"Using stored rp_id: {rp_id}, origin: {origin}")
+        print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
+
         try:
             challenge = bytes.fromhex(challenge_hex)
             cd = request.data
-
-            # DEBUG: Log WebAuthn configuration
-            print(f"=== WebAuthn Authentication Verify ===")
-            print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
-            print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
-            print(f"request.get_host(): {request.get_host()}")
-            print(f"request.scheme: {request.scheme}")
-            print(f"request.is_secure(): {request.is_secure()}")
-            print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
-            print(f"Credential ID from request: {cd.get('id', 'NOT PROVIDED')}")
-
-            origin_header = request.META.get("HTTP_ORIGIN", "")
-            if origin_header:
-                from urllib.parse import urlparse
-
-                parsed_origin = urlparse(origin_header)
-                rp_id = parsed_origin.hostname or request.get_host().split(":")[0]
-                origin = origin_header
-                print(f"Using HTTP_ORIGIN - rp_id: {rp_id}, origin: {origin}")
-            else:
-                rp_id = request.get_host().split(":")[0]
-                origin = (
-                    f"https://{rp_id}"
-                    if "localhost" not in rp_id
-                    else f"http://{rp_id}"
-                )
-                print(f"Using fallback - rp_id: {rp_id}, origin: {origin}")
-
-            # Helper function to convert various input formats to base64 string
-            def _to_base64(value):
-                if isinstance(value, str):
-                    # Already a base64 string or hex string
-                    try:
-                        base64.b64decode(value)
-                        return value
-                    except Exception:
-                        # Try hex
-                        try:
-                            return base64.b64encode(bytes.fromhex(value)).decode(
-                                "utf-8"
-                            )
-                        except Exception:
-                            return value
-                elif isinstance(value, (bytes, bytearray)):
-                    # Raw bytes - encode to base64
-                    return base64.b64encode(value).decode("utf-8")
-                elif isinstance(value, list):
-                    # Array of bytes
-                    return base64.b64encode(bytes(value)).decode("utf-8")
-                return value
-
-            # Helper function to convert to raw bytes
-            def _to_bytes(value):
-                if isinstance(value, str):
-                    try:
-                        return base64.b64decode(value)
-                    except Exception:
-                        try:
-                            return bytes.fromhex(value)
-                        except Exception:
-                            return value.encode("utf-8")
-                elif isinstance(value, (bytes, bytearray)):
-                    return bytes(value)
-                elif isinstance(value, list):
-                    return bytes(value)
-                return value
 
             # Convert credential ID to base64 string
             credential_id = _to_base64(cd.get("id", ""))
