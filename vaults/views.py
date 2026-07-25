@@ -11,7 +11,12 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 
 from .models import Vault, Account
-from vaults.utils import check_password_strength, generate_password, generate_pin, generate_passphrase
+from vaults.utils import (
+    check_password_strength,
+    generate_password,
+    generate_pin,
+    generate_passphrase,
+)
 
 from django.db.models import Count, Q, Avg, F, Value, FloatField
 from django.db.models.functions import Coalesce
@@ -289,12 +294,16 @@ class PasswordGenerateView(APIView):
 
             # Also evaluate the strength of the generated password
             from vaults.utils import check_password_strength
+
             strength = check_password_strength(password)
 
-            return Response({
-                "password": password,
-                "strength": strength,
-            }, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    "password": password,
+                    "strength": strength,
+                },
+                status=status.HTTP_200_OK,
+            )
 
         except ValueError as e:
             return Response(
@@ -412,14 +421,29 @@ class WebAuthnRegistrationOptionsView(APIView):
         vault = get_object_or_404(Vault, pk=vault_pk, owner=request.user)
         user = request.user
 
+        # DEBUG: Log WebAuthn configuration
+        print(f"=== WebAuthn Registration Options ===")
+        print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
+        print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
+        print(f"request.get_host(): {request.get_host()}")
+        print(f"request.scheme: {request.scheme}")
+        print(f"request.is_secure(): {request.is_secure()}")
+
         origin = request.META.get("HTTP_ORIGIN", "")
         if origin:
             from urllib.parse import urlparse
 
             parsed = urlparse(origin)
             rp_id = parsed.hostname or request.get_host().split(":")[0]
+            print(f"Using HTTP_ORIGIN - rp_id: {rp_id}, origin: {origin}")
         else:
             rp_id = request.get_host().split(":")[0]
+            origin = (
+                f"https://{rp_id}"
+                if not request.is_secure() and "localhost" not in rp_id
+                else f"http://{rp_id}"
+            )
+            print(f"Using fallback - rp_id: {rp_id}, origin: {origin}")
 
         rp_name = "Password Manager"
 
@@ -493,13 +517,45 @@ class WebAuthnRegistrationVerifyView(APIView):
                     else f"http://{rp_id}"
                 )
 
+            # Helper function to convert various input formats to base64 string
+            def _to_base64(value):
+                if isinstance(value, str):
+                    # Already a base64 string or hex string
+                    try:
+                        base64.b64decode(value)
+                        return value
+                    except Exception:
+                        # Try hex
+                        try:
+                            return base64.b64encode(bytes.fromhex(value)).decode(
+                                "utf-8"
+                            )
+                        except Exception:
+                            return value
+                elif isinstance(value, (bytes, bytearray)):
+                    # Raw bytes - encode to base64
+                    return base64.b64encode(value).decode("utf-8")
+                elif isinstance(value, list):
+                    # Array of bytes
+                    return base64.b64encode(bytes(value)).decode("utf-8")
+                return value
+
+            # Convert credential data to base64 strings
+            credential_id = _to_base64(cd.get("id", ""))
+            raw_id = _to_base64(cd.get("rawId", cd.get("id", "")))
+
+            # Convert response data to base64 strings
+            response_data = cd.get("response", {})
+            client_data_json = _to_base64(response_data.get("clientDataJSON", ""))
+            attestation_object = _to_base64(response_data.get("attestationObject", ""))
+
             verification = verify_registration_response(
                 credential={
-                    "id": cd["id"],
-                    "rawId": cd.get("rawId", cd["id"]),
+                    "id": credential_id,
+                    "rawId": raw_id,
                     "response": {
-                        "clientDataJSON": cd["response"]["clientDataJSON"],
-                        "attestationObject": cd["response"]["attestationObject"],
+                        "clientDataJSON": client_data_json,
+                        "attestationObject": attestation_object,
                     },
                     "type": "public-key",
                 },
@@ -589,14 +645,25 @@ class WebAuthnAuthenticationOptionsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # DEBUG: Log WebAuthn configuration
+        print(f"=== WebAuthn Authentication Options ===")
+        print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
+        print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
+        print(f"request.get_host(): {request.get_host()}")
+        print(f"request.scheme: {request.scheme}")
+        print(f"request.is_secure(): {request.is_secure()}")
+        print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
+
         origin = request.META.get("HTTP_ORIGIN", "")
         if origin:
             from urllib.parse import urlparse
 
             parsed = urlparse(origin)
             rp_id = parsed.hostname or request.get_host().split(":")[0]
+            print(f"Using HTTP_ORIGIN - rp_id: {rp_id}, origin: {origin}")
         else:
             rp_id = request.get_host().split(":")[0]
+            print(f"Using fallback rp_id: {rp_id}")
 
         try:
             options = generate_authentication_options(
@@ -650,6 +717,16 @@ class WebAuthnAuthenticationVerifyView(APIView):
             challenge = bytes.fromhex(challenge_hex)
             cd = request.data
 
+            # DEBUG: Log WebAuthn configuration
+            print(f"=== WebAuthn Authentication Verify ===")
+            print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
+            print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
+            print(f"request.get_host(): {request.get_host()}")
+            print(f"request.scheme: {request.scheme}")
+            print(f"request.is_secure(): {request.is_secure()}")
+            print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
+            print(f"Credential ID from request: {cd.get('id', 'NOT PROVIDED')}")
+
             origin_header = request.META.get("HTTP_ORIGIN", "")
             if origin_header:
                 from urllib.parse import urlparse
@@ -657,6 +734,7 @@ class WebAuthnAuthenticationVerifyView(APIView):
                 parsed_origin = urlparse(origin_header)
                 rp_id = parsed_origin.hostname or request.get_host().split(":")[0]
                 origin = origin_header
+                print(f"Using HTTP_ORIGIN - rp_id: {rp_id}, origin: {origin}")
             else:
                 rp_id = request.get_host().split(":")[0]
                 origin = (
@@ -664,6 +742,56 @@ class WebAuthnAuthenticationVerifyView(APIView):
                     if "localhost" not in rp_id
                     else f"http://{rp_id}"
                 )
+                print(f"Using fallback - rp_id: {rp_id}, origin: {origin}")
+
+            # Helper function to convert various input formats to base64 string
+            def _to_base64(value):
+                if isinstance(value, str):
+                    # Already a base64 string or hex string
+                    try:
+                        base64.b64decode(value)
+                        return value
+                    except Exception:
+                        # Try hex
+                        try:
+                            return base64.b64encode(bytes.fromhex(value)).decode(
+                                "utf-8"
+                            )
+                        except Exception:
+                            return value
+                elif isinstance(value, (bytes, bytearray)):
+                    # Raw bytes - encode to base64
+                    return base64.b64encode(value).decode("utf-8")
+                elif isinstance(value, list):
+                    # Array of bytes
+                    return base64.b64encode(bytes(value)).decode("utf-8")
+                return value
+
+            # Helper function to convert to raw bytes
+            def _to_bytes(value):
+                if isinstance(value, str):
+                    try:
+                        return base64.b64decode(value)
+                    except Exception:
+                        try:
+                            return bytes.fromhex(value)
+                        except Exception:
+                            return value.encode("utf-8")
+                elif isinstance(value, (bytes, bytearray)):
+                    return bytes(value)
+                elif isinstance(value, list):
+                    return bytes(value)
+                return value
+
+            # Convert credential ID to base64 string
+            credential_id = _to_base64(cd.get("id", ""))
+            raw_id = _to_base64(cd.get("rawId", cd.get("id", "")))
+
+            # Convert response data to base64 strings
+            response_data = cd.get("response", {})
+            client_data_json = _to_base64(response_data.get("clientDataJSON", ""))
+            authenticator_data = _to_base64(response_data.get("authenticatorData", ""))
+            signature = _to_base64(response_data.get("signature", ""))
 
             credential_public_key = (
                 base64.b64decode(vault.webauthn_credential_public_key)
@@ -673,12 +801,12 @@ class WebAuthnAuthenticationVerifyView(APIView):
 
             verification = verify_authentication_response(
                 credential={
-                    "id": cd["id"],
-                    "rawId": cd.get("rawId", cd["id"]),
+                    "id": credential_id,
+                    "rawId": raw_id,
                     "response": {
-                        "clientDataJSON": cd["response"]["clientDataJSON"],
-                        "authenticatorData": cd["response"]["authenticatorData"],
-                        "signature": cd["response"]["signature"],
+                        "clientDataJSON": client_data_json,
+                        "authenticatorData": authenticator_data,
+                        "signature": signature,
                     },
                     "type": "public-key",
                 },
@@ -717,8 +845,16 @@ class WebAuthnAuthenticationVerifyView(APIView):
             )
 
         except Exception as e:
+            import traceback
+
+            error_detail = f"Authentication verification failed: {str(e)}"
+            print(f"WebAuthn authentication error: {error_detail}")
+            print(traceback.format_exc())
             return Response(
-                {"error": f"Authentication verification failed: {str(e)}"},
+                {
+                    "error": error_detail,
+                    "detail": "Please ensure you're using the correct passkey and try again.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -729,47 +865,54 @@ class DashboardStatsView(APIView):
     Get dashboard statistics for the authenticated user.
     Returns total accounts, weak/strong counts, and security score.
     """
+
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
         user = request.user
-        
+
         # Get all vaults owned by the user
         vaults = Vault.objects.filter(owner=user)
-        
+
         # Get all accounts across all user's vaults
         accounts = Account.objects.filter(vault__in=vaults)
-        
+
         total_accounts = accounts.count()
-        
+
         # Count strong passwords (score >= 70)
         strong_count = accounts.filter(
             Q(password_strength__gte=70) & Q(password_strength__isnull=False)
         ).count()
-        
+
         # Count weak passwords (score < 50)
         weak_count = accounts.filter(
             Q(password_strength__lt=50) & Q(password_strength__isnull=False)
         ).count()
-        
+
         # Count medium passwords (50-69)
         medium_count = accounts.filter(
-            Q(password_strength__gte=50) & Q(password_strength__lt=70) & Q(password_strength__isnull=False)
+            Q(password_strength__gte=50)
+            & Q(password_strength__lt=70)
+            & Q(password_strength__isnull=False)
         ).count()
-        
+
         # Calculate security score (average of all password strengths)
         # Only consider accounts with a strength score
         avg_score = accounts.filter(password_strength__isnull=False).aggregate(
-            avg=Coalesce(Avg('password_strength'), Value(0.0), output_field=FloatField())
-        )['avg']
-        
+            avg=Coalesce(
+                Avg("password_strength"), Value(0.0), output_field=FloatField()
+            )
+        )["avg"]
+
         # Round to nearest integer
         security_score = round(avg_score) if avg_score else 0
-        
-        return Response({
-            'total_accounts': total_accounts,
-            'strong_count': strong_count,
-            'medium_count': medium_count,
-            'weak_count': weak_count,
-            'security_score': security_score,
-        })
+
+        return Response(
+            {
+                "total_accounts": total_accounts,
+                "strong_count": strong_count,
+                "medium_count": medium_count,
+                "weak_count": weak_count,
+                "security_score": security_score,
+            }
+        )
