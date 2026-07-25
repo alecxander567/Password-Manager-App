@@ -674,7 +674,10 @@ class WebAuthnAuthenticationOptionsView(APIView):
                 try:
                     cred_id_bytes = bytes.fromhex(vault.webauthn_credential_id)
                     allow_credentials = [
-                        PublicKeyCredentialDescriptor(id=cred_id_bytes),
+                        PublicKeyCredentialDescriptor(
+                            id=cred_id_bytes,
+                            transports=[],
+                        ),
                     ]
                     print(f"Filtering to specific credential ID: {vault.webauthn_credential_id[:20]}...")
                 except Exception as e:
@@ -696,6 +699,12 @@ class WebAuthnAuthenticationOptionsView(APIView):
             request.session[f"webauthn_auth_rp_id_{vault_pk}"] = rp_id
 
             options_dict = serialize_webauthn_options(options)
+            # Remove transports from allowCredentials if it's empty/null
+            # to prevent browser errors with some platforms
+            if "allowCredentials" in options_dict and options_dict["allowCredentials"]:
+                for cred in options_dict["allowCredentials"]:
+                    if "transports" in cred and not cred["transports"]:
+                        del cred["transports"]
             return Response(options_dict, status=status.HTTP_200_OK)
 
         except Exception as e:
