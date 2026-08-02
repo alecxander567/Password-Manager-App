@@ -27,9 +27,9 @@ from .serializers import (
     VaultDetailSerializer,
     AccountCreateSerializer,
     AccountListSerializer,
+    AccountUpdateSerializer,
     AccountDetailSerializer,
 )
-
 
 # -------------------------------------------------------------------
 #  Vault Endpoints
@@ -169,7 +169,7 @@ class AccountDetailView(generics.RetrieveAPIView):
 
 
 class AccountUpdateView(generics.UpdateAPIView):
-    serializer_class = AccountDetailSerializer
+    serializer_class = AccountUpdateSerializer
     permission_classes = (permissions.IsAuthenticated,)
 
     def get_queryset(self):
@@ -409,6 +409,7 @@ except ImportError:
 #  WebAuthn Helper Functions
 # -------------------------------------------------------------------
 
+
 def _get_origin_and_rp_id(request):
     """
     Extract the origin and RP ID from the request headers.
@@ -418,6 +419,7 @@ def _get_origin_and_rp_id(request):
     origin_header = request.META.get("HTTP_ORIGIN", "")
     if origin_header:
         from urllib.parse import urlparse
+
         parsed = urlparse(origin_header)
         rp_id = parsed.hostname or request.get_host().split(":")[0]
         origin = origin_header
@@ -470,12 +472,6 @@ class WebAuthnRegistrationOptionsView(APIView):
         user = request.user
 
         origin, rp_id = _get_origin_and_rp_id(request)
-
-        # DEBUG: Log WebAuthn configuration
-        print(f"=== WebAuthn Registration Options ===")
-        print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
-        print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
-        print(f"Using rp_id: {rp_id}, origin: {origin}")
 
         rp_name = "Password Manager"
 
@@ -542,9 +538,6 @@ class WebAuthnRegistrationVerifyView(APIView):
         if not origin or not rp_id:
             # Fallback: compute from request (shouldn't happen if options was called)
             origin, rp_id = _get_origin_and_rp_id(request)
-
-        print(f"=== WebAuthn Registration Verify ===")
-        print(f"Using stored rp_id: {rp_id}, origin: {origin}")
 
         try:
             challenge = bytes.fromhex(challenge_hex)
@@ -632,6 +625,7 @@ class WebAuthnRegistrationVerifyView(APIView):
 
         except Exception as e:
             import traceback
+
             print(f"Registration verification error: {e}")
             print(traceback.format_exc())
             return Response(
@@ -660,13 +654,6 @@ class WebAuthnAuthenticationOptionsView(APIView):
 
         origin, rp_id = _get_origin_and_rp_id(request)
 
-        # DEBUG: Log WebAuthn configuration
-        print(f"=== WebAuthn Authentication Options ===")
-        print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
-        print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
-        print(f"Using rp_id: {rp_id}, origin: {origin}")
-        print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
-
         try:
             # Convert stored credential ID from hex to bytes
             allow_credentials = None
@@ -679,9 +666,8 @@ class WebAuthnAuthenticationOptionsView(APIView):
                             transports=[],
                         ),
                     ]
-                    print(f"Filtering to specific credential ID: {vault.webauthn_credential_id[:20]}...")
                 except Exception as e:
-                    print(f"Could not parse credential ID: {e}")
+                    pass
 
             options = generate_authentication_options(
                 rp_id=rp_id,
@@ -749,13 +735,6 @@ class WebAuthnAuthenticationVerifyView(APIView):
         if not origin or not rp_id:
             # Fallback: compute from request (shouldn't happen if options was called)
             origin, rp_id = _get_origin_and_rp_id(request)
-
-        # DEBUG: Log WebAuthn configuration
-        print(f"=== WebAuthn Authentication Verify ===")
-        print(f"HTTP_ORIGIN: {request.META.get('HTTP_ORIGIN', 'NOT SET')}")
-        print(f"HTTP_HOST: {request.META.get('HTTP_HOST', 'NOT SET')}")
-        print(f"Using stored rp_id: {rp_id}, origin: {origin}")
-        print(f"Vault credential ID: {vault.webauthn_credential_id[:20]}...")
 
         try:
             challenge = bytes.fromhex(challenge_hex)
@@ -837,7 +816,6 @@ class WebAuthnAuthenticationVerifyView(APIView):
             )
 
 
-# Add this view class
 class DashboardStatsView(APIView):
     """
     Get dashboard statistics for the authenticated user.
@@ -849,40 +827,31 @@ class DashboardStatsView(APIView):
     def get(self, request):
         user = request.user
 
-        # Get all vaults owned by the user
         vaults = Vault.objects.filter(owner=user)
-
-        # Get all accounts across all user's vaults
         accounts = Account.objects.filter(vault__in=vaults)
 
         total_accounts = accounts.count()
 
-        # Count strong passwords (score >= 70)
         strong_count = accounts.filter(
             Q(password_strength__gte=70) & Q(password_strength__isnull=False)
         ).count()
 
-        # Count weak passwords (score < 50)
         weak_count = accounts.filter(
             Q(password_strength__lt=50) & Q(password_strength__isnull=False)
         ).count()
 
-        # Count medium passwords (50-69)
         medium_count = accounts.filter(
             Q(password_strength__gte=50)
             & Q(password_strength__lt=70)
             & Q(password_strength__isnull=False)
         ).count()
 
-        # Calculate security score (average of all password strengths)
-        # Only consider accounts with a strength score
         avg_score = accounts.filter(password_strength__isnull=False).aggregate(
             avg=Coalesce(
                 Avg("password_strength"), Value(0.0), output_field=FloatField()
             )
         )["avg"]
 
-        # Round to nearest integer
         security_score = round(avg_score) if avg_score else 0
 
         return Response(
